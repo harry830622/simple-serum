@@ -24,7 +24,7 @@ pub mod simple_serum {
         // market.bids = ctx.accounts.bids.key();
         // market.asks = ctx.accounts.asks.key();
         market.req_q = ctx.accounts.req_q.key();
-        // market.event_q = ctx.accounts.event_q.key();
+        market.event_q = ctx.accounts.event_q.key();
         market.authority = ctx.accounts.authority.key();
 
         Ok(())
@@ -43,8 +43,8 @@ pub mod simple_serum {
         let coin_vault = &ctx.accounts.coin_vault;
         let pc_vault = &ctx.accounts.pc_vault;
         let payer = &ctx.accounts.payer;
-        let req_q = &mut ctx.accounts.req_q;
         // TODO:
+        let req_q = &mut ctx.accounts.req_q;
         // let event_q = &mut ctx.accounts.event_q;
         let authority = &ctx.accounts.authority;
         let token_program = &ctx.accounts.token_program;
@@ -363,8 +363,10 @@ pub enum RequestView {
 pub struct Request {
     request_flags: u8,
     owner_slot: u8,
+
     max_coin_qty_or_cancel_id: u64,
     native_pc_qty_locked: u64,
+
     order_id: u128,
     owner: Pubkey,
 }
@@ -574,7 +576,7 @@ pub struct Event {
     native_qty_paid: u64,
 
     order_id: u128,
-    pub owner: Pubkey,
+    owner: Pubkey,
 }
 
 impl Event {
@@ -590,15 +592,12 @@ impl Event {
                 owner,
                 owner_slot,
             } => {
-                let maker_flag = if maker {
-                    BitFlags::from_flag(EventFlag::Maker).bits()
-                } else {
-                    0
-                };
-                let event_flags =
-                    (EventFlag::from_side(side) | EventFlag::Fill).bits() | maker_flag;
+                let mut flags = EventFlag::from_side(side) | EventFlag::Fill;
+                if maker {
+                    flags |= EventFlag::Maker;
+                }
                 Event {
-                    event_flags,
+                    event_flags: flags.bits(),
                     owner_slot,
                     native_qty_released: native_qty_received,
                     native_qty_paid,
@@ -616,15 +615,12 @@ impl Event {
                 owner,
                 owner_slot,
             } => {
-                let release_funds_flag = if release_funds {
-                    BitFlags::from_flag(EventFlag::ReleaseFunds).bits()
-                } else {
-                    0
-                };
-                let event_flags =
-                    (EventFlag::from_side(side) | EventFlag::Out).bits() | release_funds_flag;
+                let mut flags = EventFlag::from_side(side) | EventFlag::Out;
+                if release_funds {
+                    flags |= EventFlag::ReleaseFunds;
+                }
                 Event {
-                    event_flags,
+                    event_flags: flags.bits(),
                     owner_slot,
                     native_qty_released: native_qty_unlocked,
                     native_qty_paid: native_qty_still_locked,
@@ -711,6 +707,7 @@ pub struct InitializeMarket<'info> {
     pub coin_mint: Account<'info, Mint>,
     pub pc_mint: Account<'info, Mint>,
 
+    // TODO:
     #[account(
         init,
         payer = authority,
@@ -719,15 +716,14 @@ pub struct InitializeMarket<'info> {
         bump,
     )]
     pub req_q: Account<'info, RequestQueue>,
-    // TODO:
-    // #[account(
-    //     init,
-    //     payer = authority,
-    //     space = 8 + 8 + 8 + (1 + 1 + 8 + 8 + 16 + 32) * 32,
-    //     seeds = [b"event_q".as_ref(), market.key().as_ref()],
-    //     bump,
-    // )]
-    // pub event_q: Account<'info, EventQueue>,
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + 8 + 8 + (1 + 1 + 8 + 8 + 16 + 32) * 32,
+        seeds = [b"event_q".as_ref(), market.key().as_ref()],
+        bump,
+    )]
+    pub event_q: Account<'info, EventQueue>,
     #[account(mut)]
     pub authority: Signer<'info>,
 
