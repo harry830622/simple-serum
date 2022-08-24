@@ -239,6 +239,11 @@ describe('simple-serum', () => {
         })
         .signers([authority])
         .rpc();
+
+      const openOrders = await program.account.openOrders.fetch(openOrdersPda);
+      console.log(openOrders);
+      const reqQ = await program.account.requestQueue.fetch(reqQPda);
+      console.log(reqQ);
     });
   });
 });

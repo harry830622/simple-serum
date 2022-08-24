@@ -44,7 +44,6 @@ pub mod simple_serum {
         let coin_vault = &ctx.accounts.coin_vault;
         let pc_vault = &ctx.accounts.pc_vault;
         let payer = &ctx.accounts.payer;
-        // TODO:
         let req_q = &mut ctx.accounts.req_q;
         let authority = &ctx.accounts.authority;
         let token_program = &ctx.accounts.token_program;
@@ -52,15 +51,23 @@ pub mod simple_serum {
         if !open_orders.is_initialized {
             open_orders.init(market.key(), authority.key())?;
         } else {
-            require!(open_orders.market.key() == market.key(), ErrorCode::WrongMarket);
-            require!(open_orders.authority.key() == authority.key(), ErrorCode::WrongAuthority);
+            require!(
+                open_orders.market.key() == market.key(),
+                ErrorCode::WrongMarket
+            );
+            require!(
+                open_orders.authority.key() == authority.key(),
+                ErrorCode::WrongAuthority
+            );
         }
 
         let deposit_amount;
         let deposit_vault;
+        let native_pc_qty_locked;
         match side {
             Side::Bid => {
                 let lock_qty_native = max_native_pc_qty;
+                native_pc_qty_locked = Some(lock_qty_native);
                 let free_qty_to_lock = lock_qty_native.min(open_orders.native_pc_free);
                 deposit_amount = lock_qty_native - free_qty_to_lock;
                 deposit_vault = pc_vault;
@@ -70,6 +77,7 @@ pub mod simple_serum {
                 market.pc_deposits_total += deposit_amount;
             }
             Side::Ask => {
+                native_pc_qty_locked = None;
                 let lock_qty_native = max_coin_qty * market.coin_lot_size;
                 let free_qty_to_lock = lock_qty_native.min(open_orders.native_coin_free);
                 deposit_amount = lock_qty_native - free_qty_to_lock;
@@ -82,8 +90,17 @@ pub mod simple_serum {
         }
 
         let order_id = req_q.gen_order_id(limit_price, side);
-        let owner_slot = open_orders.add_order(order_id, side);
-        // TODO:
+        let owner_slot = open_orders.add_order(order_id, side)?;
+        let request = Request::new(RequestView::NewOrder {
+            side,
+            order_type,
+            order_id,
+            owner: open_orders.key(),
+            owner_slot,
+            max_coin_qty,
+            native_pc_qty_locked,
+        });
+        req_q.push_back(request)?;
 
         if deposit_amount != 0 {
             let transfer_ix = Transfer {
@@ -118,7 +135,6 @@ pub struct Market {
     // TODO:
     // bids: Pubkey,
     // asks: Pubkey,
-
     req_q: Pubkey,
     event_q: Pubkey,
     authority: Pubkey,
@@ -788,7 +804,6 @@ pub struct InitializeMarket<'info> {
     // TODO:
     // bids
     // asks
-
     #[account(
         init,
         payer = authority,
@@ -861,45 +876,45 @@ impl OpenOrders {
         Ok(())
     }
 
-    // fn credit_locked_coin(&mut self, native_coin_amount: u64) {
-    //     self.native_coin_total = self
-    //         .native_coin_total
-    //         .checked_add(native_coin_amount)
-    //         .unwrap();
-    // }
+    fn credit_locked_coin(&mut self, native_coin_amount: u64) {
+        self.native_coin_total = self
+            .native_coin_total
+            .checked_add(native_coin_amount)
+            .unwrap();
+    }
 
-    // fn credit_locked_pc(&mut self, native_pc_amount: u64) {
-    //     self.native_pc_total = self.native_pc_total.checked_add(native_pc_amount).unwrap();
-    // }
+    fn credit_locked_pc(&mut self, native_pc_amount: u64) {
+        self.native_pc_total = self.native_pc_total.checked_add(native_pc_amount).unwrap();
+    }
 
-    // fn lock_free_coin(&mut self, native_coin_amount: u64) {
-    //     self.native_coin_free = self
-    //         .native_coin_free
-    //         .checked_sub(native_coin_amount)
-    //         .unwrap();
-    // }
+    fn lock_free_coin(&mut self, native_coin_amount: u64) {
+        self.native_coin_free = self
+            .native_coin_free
+            .checked_sub(native_coin_amount)
+            .unwrap();
+    }
 
-    // fn lock_free_pc(&mut self, native_pc_amount: u64) {
-    //     self.native_pc_free = self.native_pc_free.checked_sub(native_pc_amount).unwrap();
-    // }
+    fn lock_free_pc(&mut self, native_pc_amount: u64) {
+        self.native_pc_free = self.native_pc_free.checked_sub(native_pc_amount).unwrap();
+    }
 
-    // pub fn unlock_coin(&mut self, native_coin_amount: u64) {
-    //     self.native_coin_free = self
-    //         .native_coin_free
-    //         .checked_add(native_coin_amount)
-    //         .unwrap();
-    //     assert!(self.native_coin_free <= self.native_coin_total);
-    // }
+    pub fn unlock_coin(&mut self, native_coin_amount: u64) {
+        self.native_coin_free = self
+            .native_coin_free
+            .checked_add(native_coin_amount)
+            .unwrap();
+        assert!(self.native_coin_free <= self.native_coin_total);
+    }
 
-    // pub fn unlock_pc(&mut self, native_pc_amount: u64) {
-    //     self.native_pc_free = self.native_pc_free.checked_add(native_pc_amount).unwrap();
-    //     assert!(self.native_pc_free <= self.native_pc_total);
-    // }
+    pub fn unlock_pc(&mut self, native_pc_amount: u64) {
+        self.native_pc_free = self.native_pc_free.checked_add(native_pc_amount).unwrap();
+        assert!(self.native_pc_free <= self.native_pc_total);
+    }
 
-    // fn slot_is_free(&self, slot: u8) -> bool {
-    //     let slot_mask = 1u128 << slot;
-    //     self.free_slot_bits & slot_mask != 0
-    // }
+    fn slot_is_free(&self, slot: u8) -> bool {
+        let slot_mask = 1u8 << slot;
+        self.free_slot_bits & slot_mask != 0
+    }
 
     // #[inline]
     // fn iter_filled_slots(&self) -> impl Iterator<Item = u8> {
@@ -935,34 +950,34 @@ impl OpenOrders {
     //     })
     // }
 
-    // pub fn slot_side(&self, slot: u8) -> Option<Side> {
-    //     let slot_mask = 1u128 << slot;
-    //     if self.free_slot_bits & slot_mask != 0 {
-    //         None
-    //     } else if self.is_bid_bits & slot_mask != 0 {
-    //         Some(Side::Bid)
-    //     } else {
-    //         Some(Side::Ask)
-    //     }
-    // }
+    pub fn slot_side(&self, slot: u8) -> Option<Side> {
+        let slot_mask = 1u8 << slot;
+        if self.free_slot_bits & slot_mask != 0 {
+            None
+        } else if self.is_bid_bits & slot_mask != 0 {
+            Some(Side::Bid)
+        } else {
+            Some(Side::Ask)
+        }
+    }
 
-    // pub fn remove_order(&mut self, slot: u8) -> DexResult {
-    //     check_assert!(slot < 128)?;
-    //     check_assert!(!self.slot_is_free(slot))?;
+    pub fn remove_order(&mut self, slot: u8) -> Result<()> {
+        // check_assert!(slot < 128)?;
+        // check_assert!(!self.slot_is_free(slot))?;
+        require!(self.slot_is_free(slot), ErrorCode::SlotIsNotFree);
 
-    //     let slot_mask = 1u128 << slot;
-    //     self.orders[slot as usize] = 0;
-    //     self.client_order_ids[slot as usize] = 0;
-    //     self.free_slot_bits |= slot_mask;
-    //     self.is_bid_bits &= !slot_mask;
+        let slot_mask = 1u8 << slot;
+        self.orders[slot as usize] = 0;
+        self.free_slot_bits |= slot_mask;
+        self.is_bid_bits &= !slot_mask;
 
-    //     Ok(())
-    // }
+        Ok(())
+    }
 
     fn add_order(&mut self, id: u128, side: Side) -> Result<u8> {
         require!(self.free_slot_bits != 0, ErrorCode::TooManyOpenOrders);
-        let slot = self.free_slot_bits.trailing_zeros();
-        // check_assert!(self.slot_is_free(slot as u8))?;
+        let slot = self.free_slot_bits.trailing_zeros() as u8;
+        require!(self.slot_is_free(slot), ErrorCode::SlotIsNotFree);
         let slot_mask = 1u8 << slot;
         self.free_slot_bits &= !slot_mask;
         match side {
@@ -1036,6 +1051,10 @@ pub struct NewOrder<'info> {
 pub enum ErrorCode {
     #[msg("Wrong payer mint")]
     WrongPayerMint,
+    #[msg("Wrong market")]
+    WrongMarket,
+    #[msg("Wrong authority")]
+    WrongAuthority,
 
     #[msg("Insufficient funds")]
     InsufficientFunds,
@@ -1054,8 +1073,6 @@ pub enum ErrorCode {
     #[msg("Too many open orders")]
     TooManyOpenOrders,
 
-    #[msg("Wrong market")]
-    WrongMarket,
-    #[msg("Wrong authority")]
-    WrongAuthority,
+    #[msg("Slot is not free")]
+    SlotIsNotFree,
 }
