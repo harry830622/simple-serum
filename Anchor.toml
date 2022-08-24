@@ -13,3 +13,4 @@ wallet = "/Users/harry/.config/solana/id.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+# test = "yarn run ts-mocha -n loader=ts-node/esm -p ./tsconfig.json -t 1000000 tests/**/*.ts"

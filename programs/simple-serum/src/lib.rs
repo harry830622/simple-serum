@@ -21,6 +21,7 @@ pub mod simple_serum {
         market.pc_lot_size = 1;
         market.coin_deposits_total = 0;
         market.pc_deposits_total = 0;
+        // TODO:
         // market.bids = ctx.accounts.bids.key();
         // market.asks = ctx.accounts.asks.key();
         market.req_q = ctx.accounts.req_q.key();
@@ -45,12 +46,14 @@ pub mod simple_serum {
         let payer = &ctx.accounts.payer;
         // TODO:
         let req_q = &mut ctx.accounts.req_q;
-        // let event_q = &mut ctx.accounts.event_q;
         let authority = &ctx.accounts.authority;
         let token_program = &ctx.accounts.token_program;
 
         if !open_orders.is_initialized {
             open_orders.init(market.key(), authority.key())?;
+        } else {
+            require!(open_orders.market.key() == market.key(), ErrorCode::WrongMarket);
+            require!(open_orders.authority.key() == authority.key(), ErrorCode::WrongAuthority);
         }
 
         let deposit_amount;
@@ -112,218 +115,34 @@ pub struct Market {
     coin_deposits_total: u64,
     pc_deposits_total: u64,
 
-    bids: Pubkey,
-    asks: Pubkey,
+    // TODO:
+    // bids: Pubkey,
+    // asks: Pubkey,
 
     req_q: Pubkey,
     event_q: Pubkey,
-
     authority: Pubkey,
 }
 
 impl Market {
+    pub const MAX_SIZE: usize = 32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 32 + 32 + 32 + 32 + 32;
+
     #[inline]
-    fn check_payer_mint(&self, payer_mint: Pubkey, side: Side) -> Result<()> {
+    fn check_payer_mint(&self, payer_mint: Pubkey, side: Side) -> bool {
         match side {
             Side::Bid => {
                 if payer_mint == self.pc_mint {
-                    Ok(())
-                } else {
-                    Err(error!(ErrorCode::WrongPayerMint))
+                    return true;
                 }
+                return false;
             }
             Side::Ask => {
                 if payer_mint == self.coin_mint {
-                    Ok(())
-                } else {
-                    Err(error!(ErrorCode::WrongPayerMint))
+                    return true;
                 }
+                return false;
             }
         }
-    }
-}
-
-pub trait QueueHeader {
-    type Item: Copy + Default + anchor_lang::AnchorSerialize + anchor_lang::AnchorDeserialize;
-
-    fn head(&self) -> u64;
-    fn set_head(&mut self, value: u64);
-    fn count(&self) -> u64;
-    fn set_count(&mut self, value: u64);
-
-    fn incr_event_id(&mut self);
-    fn decr_event_id(&mut self, n: u64);
-}
-
-#[account]
-#[derive(Default)]
-pub struct Queue<
-    H: QueueHeader + Default + anchor_lang::AnchorSerialize + anchor_lang::AnchorDeserialize,
-> {
-    header: H,
-    buf: [H::Item; 32],
-}
-
-impl<H: QueueHeader + Default + anchor_lang::AnchorSerialize + anchor_lang::AnchorDeserialize>
-    Queue<H>
-{
-    pub fn new(header: H, buf: [H::Item; 32]) -> Self {
-        Self { header, buf }
-    }
-
-    #[inline]
-    pub fn len(&self) -> u64 {
-        self.header.count()
-    }
-
-    #[inline]
-    pub fn full(&self) -> bool {
-        self.header.count() as usize == self.buf.len()
-    }
-
-    #[inline]
-    pub fn empty(&self) -> bool {
-        self.header.count() == 0
-    }
-
-    #[inline]
-    pub fn push_back(&mut self, value: H::Item) -> Result<()> {
-        if self.full() {
-            return Err(error!(ErrorCode::QueueAlreadyFull));
-        }
-        let slot = ((self.header.head() + self.header.count()) as usize) % self.buf.len();
-        self.buf[slot] = value;
-
-        let count = self.header.count();
-        self.header.set_count(count + 1);
-
-        self.header.incr_event_id();
-
-        Ok(())
-    }
-
-    #[inline]
-    pub fn peek_front(&self) -> Option<&H::Item> {
-        if self.empty() {
-            return None;
-        }
-        Some(&self.buf[self.header.head() as usize])
-    }
-
-    #[inline]
-    pub fn peek_front_mut(&mut self) -> Option<&mut H::Item> {
-        if self.empty() {
-            return None;
-        }
-        Some(&mut self.buf[self.header.head() as usize])
-    }
-
-    #[inline]
-    pub fn pop_front(&mut self) -> Result<H::Item> {
-        if self.empty() {
-            return Err(error!(ErrorCode::EmptyQueue));
-        }
-        let value = self.buf[self.header.head() as usize];
-
-        let count = self.header.count();
-        self.header.set_count(count - 1);
-
-        let head = self.header.head();
-        self.header.set_head((head + 1) % self.buf.len() as u64);
-
-        Ok(value)
-    }
-
-    // #[inline]
-    // pub fn revert_pushes(&mut self, desired_len: u64) -> DexResult<()> {
-    //     check_assert!(desired_len <= self.header.count())?;
-    //     let len_diff = self.header.count() - desired_len;
-    //     self.header.set_count(desired_len);
-    //     self.header.decr_event_id(len_diff);
-    //     Ok(())
-    // }
-
-    pub fn iter(&self) -> impl Iterator<Item = &H::Item> {
-        QueueIterator {
-            queue: self,
-            index: 0,
-        }
-    }
-}
-
-struct QueueIterator<
-    'a,
-    H: QueueHeader + Default + anchor_lang::AnchorSerialize + anchor_lang::AnchorDeserialize,
-> {
-    queue: &'a Queue<H>,
-    index: u64,
-}
-
-impl<
-        'a,
-        H: QueueHeader + Default + anchor_lang::AnchorSerialize + anchor_lang::AnchorDeserialize,
-    > Iterator for QueueIterator<'a, H>
-{
-    type Item = &'a H::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index == self.queue.len() {
-            None
-        } else {
-            let item = &self.queue.buf
-                [(self.queue.header.head() + self.index) as usize % self.queue.buf.len()];
-            self.index += 1;
-            Some(item)
-        }
-    }
-}
-
-// #[repr(packed)]
-#[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize)]
-pub struct RequestQueueHeader {
-    head: u64,
-    count: u64,
-    next_seq_num: u64,
-}
-
-impl QueueHeader for RequestQueueHeader {
-    type Item = Request;
-
-    fn head(&self) -> u64 {
-        self.head
-    }
-    fn set_head(&mut self, value: u64) {
-        self.head = value;
-    }
-    fn count(&self) -> u64 {
-        self.count
-    }
-    fn set_count(&mut self, value: u64) {
-        self.count = value;
-    }
-    #[inline(always)]
-    fn incr_event_id(&mut self) {}
-    #[inline(always)]
-    fn decr_event_id(&mut self, _n: u64) {}
-}
-
-pub type RequestQueue = Queue<RequestQueueHeader>;
-
-impl RequestQueue {
-    fn gen_order_id(&mut self, limit_price: u64, side: Side) -> u128 {
-        let seq_num = self.gen_seq_num();
-        let upper = (limit_price as u128) << 64;
-        let lower = match side {
-            Side::Bid => !seq_num,
-            Side::Ask => seq_num,
-        };
-        upper | (lower as u128)
-    }
-
-    fn gen_seq_num(&mut self) -> u64 {
-        let seq_num = self.header.next_seq_num;
-        self.header.next_seq_num += 1;
-        seq_num
     }
 }
 
@@ -372,6 +191,8 @@ pub struct Request {
 }
 
 impl Request {
+    pub const MAX_SIZE: usize = 1 + 1 + 8 + 8 + 16 + 32;
+
     #[inline(always)]
     pub fn new(view: RequestView) -> Self {
         match view {
@@ -476,14 +297,14 @@ impl Request {
 
 // #[repr(packed)]
 #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize)]
-pub struct EventQueueHeader {
+pub struct RequestQueueHeader {
     head: u64,
     count: u64,
-    seq_num: u64,
+    next_seq_num: u64,
 }
 
-impl QueueHeader for EventQueueHeader {
-    type Item = Event;
+impl RequestQueueHeader {
+    pub const MAX_SIZE: usize = 8 + 8 + 8;
 
     fn head(&self) -> u64 {
         self.head
@@ -497,15 +318,130 @@ impl QueueHeader for EventQueueHeader {
     fn set_count(&mut self, value: u64) {
         self.count = value;
     }
-    fn incr_event_id(&mut self) {
-        self.seq_num += 1;
+}
+
+#[account]
+#[derive(Default)]
+pub struct RequestQueue {
+    header: RequestQueueHeader,
+    buf: [Request; 8], // TODO: Somehow it can only has 8 elements at most
+}
+
+impl RequestQueue {
+    pub const MAX_SIZE: usize = RequestQueueHeader::MAX_SIZE + 8 * Request::MAX_SIZE;
+
+    #[inline]
+    pub fn len(&self) -> u64 {
+        self.header.count()
     }
-    fn decr_event_id(&mut self, n: u64) {
-        self.seq_num -= n;
+
+    #[inline]
+    pub fn full(&self) -> bool {
+        self.header.count() as usize == self.buf.len()
+    }
+
+    #[inline]
+    pub fn empty(&self) -> bool {
+        self.header.count() == 0
+    }
+
+    #[inline]
+    pub fn push_back(&mut self, value: Request) -> Result<()> {
+        require!(!self.full(), ErrorCode::QueueAlreadyFull);
+
+        let slot = ((self.header.head() + self.header.count()) as usize) % self.buf.len();
+        self.buf[slot] = value;
+
+        let count = self.header.count();
+        self.header.set_count(count + 1);
+
+        Ok(())
+    }
+
+    #[inline]
+    pub fn peek_front(&self) -> Option<&Request> {
+        if self.empty() {
+            return None;
+        }
+        Some(&self.buf[self.header.head() as usize])
+    }
+
+    #[inline]
+    pub fn peek_front_mut(&mut self) -> Option<&mut Request> {
+        if self.empty() {
+            return None;
+        }
+        Some(&mut self.buf[self.header.head() as usize])
+    }
+
+    #[inline]
+    pub fn pop_front(&mut self) -> Result<Request> {
+        require!(!self.empty(), ErrorCode::EmptyQueue);
+
+        let value = self.buf[self.header.head() as usize];
+
+        let count = self.header.count();
+        self.header.set_count(count - 1);
+
+        let head = self.header.head();
+        self.header.set_head((head + 1) % self.buf.len() as u64);
+
+        Ok(value)
+    }
+
+    // TODO:
+    // #[inline]
+    // pub fn revert_pushes(&mut self, desired_len: u64) -> DexResult<()> {
+    //     check_assert!(desired_len <= self.header.count())?;
+    //     let len_diff = self.header.count() - desired_len;
+    //     self.header.set_count(desired_len);
+    //     self.header.decr_event_id(len_diff);
+    //     Ok(())
+    // }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Request> {
+        RequestQueueIterator {
+            queue: self,
+            index: 0,
+        }
+    }
+
+    fn gen_order_id(&mut self, limit_price: u64, side: Side) -> u128 {
+        let seq_num = self.gen_seq_num();
+        let upper = (limit_price as u128) << 64;
+        let lower = match side {
+            Side::Bid => !seq_num,
+            Side::Ask => seq_num,
+        };
+        upper | (lower as u128)
+    }
+
+    fn gen_seq_num(&mut self) -> u64 {
+        let seq_num = self.header.next_seq_num;
+        self.header.next_seq_num += 1;
+        seq_num
     }
 }
 
-pub type EventQueue = Queue<EventQueueHeader>;
+struct RequestQueueIterator<'a> {
+    queue: &'a RequestQueue,
+    index: u64,
+}
+
+impl<'a> Iterator for RequestQueueIterator<'a> {
+    type Item = &'a Request;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index == self.queue.len() {
+            None
+        } else {
+            let item = &self.queue.buf
+                [(self.queue.header.head() + self.index) as usize % self.queue.buf.len()];
+            self.index += 1;
+            Some(item)
+        }
+    }
+}
 
 #[bitflags]
 #[repr(u8)]
@@ -580,6 +516,8 @@ pub struct Event {
 }
 
 impl Event {
+    pub const MAX_SIZE: usize = 1 + 1 + 8 + 8 + 16 + 32;
+
     #[inline(always)]
     pub fn new(view: EventView) -> Self {
         match view {
@@ -678,16 +616,156 @@ impl Event {
     // }
 }
 
+// #[repr(packed)]
+#[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize)]
+pub struct EventQueueHeader {
+    head: u64,
+    count: u64,
+    seq_num: u64,
+}
+
+impl EventQueueHeader {
+    pub const MAX_SIZE: usize = 8 + 8 + 8;
+
+    fn head(&self) -> u64 {
+        self.head
+    }
+    fn set_head(&mut self, value: u64) {
+        self.head = value;
+    }
+    fn count(&self) -> u64 {
+        self.count
+    }
+    fn set_count(&mut self, value: u64) {
+        self.count = value;
+    }
+    fn incr_event_id(&mut self) {
+        self.seq_num += 1;
+    }
+    fn decr_event_id(&mut self, n: u64) {
+        self.seq_num -= n;
+    }
+}
+
+#[account]
+#[derive(Default)]
+pub struct EventQueue {
+    header: EventQueueHeader,
+    buf: [Event; 8], // TODO: Somehow it can only has 8 elements at most
+}
+
+impl EventQueue {
+    pub const MAX_SIZE: usize = EventQueueHeader::MAX_SIZE + 8 * Event::MAX_SIZE;
+
+    #[inline]
+    pub fn len(&self) -> u64 {
+        self.header.count()
+    }
+
+    #[inline]
+    pub fn full(&self) -> bool {
+        self.header.count() as usize == self.buf.len()
+    }
+
+    #[inline]
+    pub fn empty(&self) -> bool {
+        self.header.count() == 0
+    }
+
+    #[inline]
+    pub fn push_back(&mut self, value: Event) -> Result<()> {
+        require!(!self.full(), ErrorCode::QueueAlreadyFull);
+
+        let slot = ((self.header.head() + self.header.count()) as usize) % self.buf.len();
+        self.buf[slot] = value;
+
+        let count = self.header.count();
+        self.header.set_count(count + 1);
+
+        self.header.incr_event_id();
+
+        Ok(())
+    }
+
+    #[inline]
+    pub fn peek_front(&self) -> Option<&Event> {
+        if self.empty() {
+            return None;
+        }
+        Some(&self.buf[self.header.head() as usize])
+    }
+
+    #[inline]
+    pub fn peek_front_mut(&mut self) -> Option<&mut Event> {
+        if self.empty() {
+            return None;
+        }
+        Some(&mut self.buf[self.header.head() as usize])
+    }
+
+    #[inline]
+    pub fn pop_front(&mut self) -> Result<Event> {
+        require!(!self.empty(), ErrorCode::EmptyQueue);
+
+        let value = self.buf[self.header.head() as usize];
+
+        let count = self.header.count();
+        self.header.set_count(count - 1);
+
+        let head = self.header.head();
+        self.header.set_head((head + 1) % self.buf.len() as u64);
+
+        Ok(value)
+    }
+
+    // TODO:
+    // #[inline]
+    // pub fn revert_pushes(&mut self, desired_len: u64) -> DexResult<()> {
+    //     check_assert!(desired_len <= self.header.count())?;
+    //     let len_diff = self.header.count() - desired_len;
+    //     self.header.set_count(desired_len);
+    //     self.header.decr_event_id(len_diff);
+    //     Ok(())
+    // }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Event> {
+        EventQueueIterator {
+            queue: self,
+            index: 0,
+        }
+    }
+}
+
+struct EventQueueIterator<'a> {
+    queue: &'a EventQueue,
+    index: u64,
+}
+
+impl<'a> Iterator for EventQueueIterator<'a> {
+    type Item = &'a Event;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index == self.queue.len() {
+            None
+        } else {
+            let item = &self.queue.buf
+                [(self.queue.header.head() + self.index) as usize % self.queue.buf.len()];
+            self.index += 1;
+            Some(item)
+        }
+    }
+}
+
 #[derive(Accounts)]
 pub struct InitializeMarket<'info> {
     #[account(
         init,
         payer = authority,
-        space = 32 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 32 + 32 + 32 + 32 + 32,
+        space = 8 + Market::MAX_SIZE,
         seeds = [b"market".as_ref(), coin_mint.key().as_ref(), pc_mint.key().as_ref()],
         bump,
     )]
-    pub market: Account<'info, Market>,
+    pub market: Box<Account<'info, Market>>,
 
     #[account(
         init,
@@ -708,22 +786,25 @@ pub struct InitializeMarket<'info> {
     pub pc_mint: Account<'info, Mint>,
 
     // TODO:
+    // bids
+    // asks
+
     #[account(
         init,
         payer = authority,
-        space = 8 + 8 + 8 + (1 + 1 + 8 + 8 + 16 + 32) * 32,
-        seeds = [b"req_q".as_ref(), market.key().as_ref()],
+        space = 8 + RequestQueue::MAX_SIZE,
+        seeds = [b"req-q".as_ref(), market.key().as_ref()],
         bump,
     )]
-    pub req_q: Account<'info, RequestQueue>,
+    pub req_q: Box<Account<'info, RequestQueue>>,
     #[account(
         init,
         payer = authority,
-        space = 8 + 8 + 8 + (1 + 1 + 8 + 8 + 16 + 32) * 32,
-        seeds = [b"event_q".as_ref(), market.key().as_ref()],
+        space = 8 + EventQueue::MAX_SIZE,
+        seeds = [b"event-q".as_ref(), market.key().as_ref()],
         bump,
     )]
-    pub event_q: Account<'info, EventQueue>,
+    pub event_q: Box<Account<'info, EventQueue>>,
     #[account(mut)]
     pub authority: Signer<'info>,
 
@@ -740,7 +821,7 @@ pub enum Side {
     Ask = 1,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize)]
+#[derive(Copy, Clone, AnchorSerialize, AnchorDeserialize)]
 pub enum OrderType {
     Limit = 0,
     // ImmediateOrCancel = 1,
@@ -761,18 +842,21 @@ pub struct OpenOrders {
     native_coin_total: u64,
     native_pc_total: u64,
 
-    free_slot_bits: u32,
-    is_bid_bits: u32,
-    orders: [u128; 32],
+    free_slot_bits: u8,
+    is_bid_bits: u8,
+    orders: [u128; 8],
 }
 
 impl OpenOrders {
+    pub const MAX_SIZE: usize = 1 + 32 + 32 + 8 + 8 + 8 + 8 + 1 + 1 + 8 * 16;
+
     fn init(&mut self, market: Pubkey, authority: Pubkey) -> Result<()> {
         require!(!self.is_initialized, ErrorCode::AlreadyInitialized);
 
+        self.is_initialized = true;
         self.market = market;
         self.authority = authority;
-        self.free_slot_bits = std::u32::MAX;
+        self.free_slot_bits = std::u8::MAX;
 
         Ok(())
     }
@@ -879,7 +963,7 @@ impl OpenOrders {
         require!(self.free_slot_bits != 0, ErrorCode::TooManyOpenOrders);
         let slot = self.free_slot_bits.trailing_zeros();
         // check_assert!(self.slot_is_free(slot as u8))?;
-        let slot_mask = 1u32 << slot;
+        let slot_mask = 1u8 << slot;
         self.free_slot_bits &= !slot_mask;
         match side {
             Side::Bid => {
@@ -899,20 +983,18 @@ impl OpenOrders {
 pub struct NewOrder<'info> {
     #[account(
         init_if_needed,
-        space = 32 + 32 + 8 + 8 + 16 + 16 + 16 * 16,
+        space = 8 + OpenOrders::MAX_SIZE,
         payer = authority,
-        seeds = [b"open_orders".as_ref(), market.key().as_ref(), authority.key().as_ref()],
+        seeds = [b"open-orders".as_ref(), market.key().as_ref(), authority.key().as_ref()],
         bump,
-        has_one = market,
-        has_one = authority,
     )]
-    pub open_orders: Account<'info, OpenOrders>,
+    pub open_orders: Box<Account<'info, OpenOrders>>,
 
     #[account(
         seeds = [b"market".as_ref(), coin_mint.key().as_ref(), pc_mint.key().as_ref()],
         bump,
     )]
-    pub market: Account<'info, Market>,
+    pub market: Box<Account<'info, Market>>,
 
     #[account(
         mut,
@@ -932,16 +1014,13 @@ pub struct NewOrder<'info> {
 
     #[account(
         mut,
-        constraint = (match market.check_payer_mint(payer.mint, side) {
-            Ok(_) => true,
-            Err(_) => false,
-        }),
+        constraint = market.check_payer_mint(payer.mint, side) @ ErrorCode::WrongPayerMint,
         token::authority = authority,
     )]
     pub payer: Account<'info, TokenAccount>,
 
     #[account(mut)]
-    pub req_q: Account<'info, RequestQueue>,
+    pub req_q: Box<Account<'info, RequestQueue>>,
 
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -974,4 +1053,9 @@ pub enum ErrorCode {
 
     #[msg("Too many open orders")]
     TooManyOpenOrders,
+
+    #[msg("Wrong market")]
+    WrongMarket,
+    #[msg("Wrong authority")]
+    WrongAuthority,
 }
