@@ -274,6 +274,7 @@ describe('simple-serum', () => {
           .signers([authority])
           .rpc();
 
+        console.log('place limit order buy price: 99');
         const openOrders = await program.account.openOrders.fetch(
           openOrdersPda,
         );
@@ -312,6 +313,7 @@ describe('simple-serum', () => {
           .signers([authority])
           .rpc();
 
+        console.log('place limit order ask price: 100');
         const openOrders = await program.account.openOrders.fetch(
           openOrdersPda,
         );
@@ -350,6 +352,7 @@ describe('simple-serum', () => {
           .signers([authority])
           .rpc();
 
+        console.log('place limit order buy price: 101');
         const openOrders = await program.account.openOrders.fetch(
           openOrdersPda,
         );

@@ -677,6 +677,7 @@ impl<const T: bool> Orders<T> {
                 self.sorted[i] = self.sorted[i + 1];
             }
         }
+        self.sorted.pop();
 
         Ok(())
     }
