@@ -112,7 +112,7 @@ describe('simple-serum', () => {
       ),
     );
 
-    await createMint(provider, coinMint, 18);
+    await createMint(provider, coinMint, 9);
     await createMint(provider, pcMint, 6);
 
     [marketPda, marketPdaBump] = await anchor.web3.PublicKey.findProgramAddress(
@@ -202,7 +202,7 @@ describe('simple-serum', () => {
       provider,
       coinMint.publicKey,
       authorityCoinTokenAccount,
-      BigInt('1000000000000000000'),
+      BigInt('10000000000'),
     );
     await mintTo(
       provider,
@@ -215,7 +215,7 @@ describe('simple-serum', () => {
   describe('#initialize_market', async () => {
     it('should initialize market successfully', async () => {
       await program.methods
-        .initializeMarket()
+        .initializeMarket(new anchor.BN('1000000000'), new anchor.BN('1000000'))
         .accounts({
           market: marketPda,
           coinVault,
@@ -248,27 +248,119 @@ describe('simple-serum', () => {
 
   describe('#new_order', async () => {
     it('should new order successfully', async () => {
-      await program.methods
-        .newOrder(
-          { bid: {} },
-          new anchor.BN(100),
-          new anchor.BN(0),
-          new anchor.BN(100),
-          { limit: {} },
-        )
-        .accounts({
-          openOrders: openOrdersPda,
-          market: marketPda,
-          coinVault,
-          pcVault,
-          coinMint: coinMint.publicKey,
-          pcMint: pcMint.publicKey,
-          payer: authorityPcTokenAccount,
-          reqQ: reqQPda,
-          authority: authority.publicKey,
-        })
-        .signers([authority])
-        .rpc();
+      {
+        await program.methods
+          .newOrder(
+            { bid: {} },
+            new anchor.BN(99),
+            new anchor.BN(1),
+            new anchor.BN(99).mul(new anchor.BN(1000000)),
+            { limit: {} },
+          )
+          .accounts({
+            openOrders: openOrdersPda,
+            market: marketPda,
+            coinVault,
+            pcVault,
+            coinMint: coinMint.publicKey,
+            pcMint: pcMint.publicKey,
+            payer: authorityPcTokenAccount,
+            bids: bidsPda,
+            asks: asksPda,
+            reqQ: reqQPda,
+            eventQ: eventQPda,
+            authority: authority.publicKey,
+          })
+          .signers([authority])
+          .rpc();
+
+        const openOrders = await program.account.openOrders.fetch(
+          openOrdersPda,
+        );
+        console.log(openOrders);
+        const bids = await program.account.orders.fetch(bidsPda);
+        console.log(bids);
+        const asks = await program.account.orders.fetch(asksPda);
+        console.log(asks);
+        const eventQ = await program.account.eventQueue.fetch(eventQPda);
+        console.log(eventQ);
+      }
+
+      {
+        await program.methods
+          .newOrder(
+            { ask: {} },
+            new anchor.BN(100),
+            new anchor.BN(1),
+            new anchor.BN(0),
+            { limit: {} },
+          )
+          .accounts({
+            openOrders: openOrdersPda,
+            market: marketPda,
+            coinVault,
+            pcVault,
+            coinMint: coinMint.publicKey,
+            pcMint: pcMint.publicKey,
+            payer: authorityCoinTokenAccount,
+            bids: bidsPda,
+            asks: asksPda,
+            reqQ: reqQPda,
+            eventQ: eventQPda,
+            authority: authority.publicKey,
+          })
+          .signers([authority])
+          .rpc();
+
+        const openOrders = await program.account.openOrders.fetch(
+          openOrdersPda,
+        );
+        console.log(openOrders);
+        const bids = await program.account.orders.fetch(bidsPda);
+        console.log(bids);
+        const asks = await program.account.orders.fetch(asksPda);
+        console.log(asks);
+        const eventQ = await program.account.eventQueue.fetch(eventQPda);
+        console.log(eventQ);
+      }
+
+      {
+        await program.methods
+          .newOrder(
+            { bid: {} },
+            new anchor.BN(101),
+            new anchor.BN(1),
+            new anchor.BN(101).mul(new anchor.BN(1000000)),
+            { limit: {} },
+          )
+          .accounts({
+            openOrders: openOrdersPda,
+            market: marketPda,
+            coinVault,
+            pcVault,
+            coinMint: coinMint.publicKey,
+            pcMint: pcMint.publicKey,
+            payer: authorityPcTokenAccount,
+            bids: bidsPda,
+            asks: asksPda,
+            reqQ: reqQPda,
+            eventQ: eventQPda,
+            authority: authority.publicKey,
+          })
+          .signers([authority])
+          .rpc();
+
+        const openOrders = await program.account.openOrders.fetch(
+          openOrdersPda,
+        );
+        console.log(openOrders);
+        const bids = await program.account.orders.fetch(bidsPda);
+        console.log(bids);
+        const asks = await program.account.orders.fetch(asksPda);
+        console.log(asks);
+        const eventQ = await program.account.eventQueue.fetch(eventQPda);
+        console.log(eventQ);
+      }
     });
   });
 });
