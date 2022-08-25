@@ -21,9 +21,8 @@ pub mod simple_serum {
         market.pc_lot_size = 1;
         market.coin_deposits_total = 0;
         market.pc_deposits_total = 0;
-        // TODO:
-        // market.bids = ctx.accounts.bids.key();
-        // market.asks = ctx.accounts.asks.key();
+        market.bids = ctx.accounts.bids.key();
+        market.asks = ctx.accounts.asks.key();
         market.req_q = ctx.accounts.req_q.key();
         market.event_q = ctx.accounts.event_q.key();
         market.authority = ctx.accounts.authority.key();
@@ -72,26 +71,34 @@ pub mod simple_serum {
                 deposit_amount = lock_qty_native - free_qty_to_lock;
                 deposit_vault = pc_vault;
                 require!(payer.amount >= deposit_amount, ErrorCode::InsufficientFunds);
-                open_orders.native_pc_free -= free_qty_to_lock;
-                open_orders.native_pc_total += deposit_amount;
-                market.pc_deposits_total += deposit_amount;
+                open_orders.lock_free_pc(free_qty_to_lock);
+                open_orders.credit_locked_pc(deposit_amount);
+                market.pc_deposits_total = market
+                    .pc_deposits_total
+                    .checked_add(deposit_amount)
+                    .unwrap();
             }
             Side::Ask => {
                 native_pc_qty_locked = None;
-                let lock_qty_native = max_coin_qty * market.coin_lot_size;
+                let lock_qty_native = max_coin_qty
+                    .checked_mul(market.coin_lot_size)
+                    .ok_or(error!(ErrorCode::InsufficientFunds))?;
                 let free_qty_to_lock = lock_qty_native.min(open_orders.native_coin_free);
                 deposit_amount = lock_qty_native - free_qty_to_lock;
                 deposit_vault = coin_vault;
                 require!(payer.amount >= deposit_amount, ErrorCode::InsufficientFunds);
-                open_orders.native_coin_free -= free_qty_to_lock;
-                open_orders.native_coin_total += deposit_amount;
-                market.coin_deposits_total += deposit_amount;
+                open_orders.lock_free_coin(free_qty_to_lock);
+                open_orders.credit_locked_coin(deposit_amount);
+                market.coin_deposits_total = market
+                    .coin_deposits_total
+                    .checked_add(deposit_amount)
+                    .unwrap();
             }
         }
 
         let order_id = req_q.gen_order_id(limit_price, side);
         let owner_slot = open_orders.add_order(order_id, side)?;
-        let request = Request::new(RequestView::NewOrder {
+        let request = RequestView::NewOrder {
             side,
             order_type,
             order_id,
@@ -99,8 +106,8 @@ pub mod simple_serum {
             owner_slot,
             max_coin_qty,
             native_pc_qty_locked,
-        });
-        req_q.push_back(request)?;
+        };
+        // TODO:
 
         if deposit_amount != 0 {
             let transfer_ix = Transfer {
@@ -119,6 +126,7 @@ pub mod simple_serum {
 }
 
 #[account]
+#[derive(Default)]
 pub struct Market {
     coin_vault: Pubkey,
     pc_vault: Pubkey,
@@ -132,11 +140,12 @@ pub struct Market {
     coin_deposits_total: u64,
     pc_deposits_total: u64,
 
-    // TODO:
-    // bids: Pubkey,
-    // asks: Pubkey,
+    bids: Pubkey,
+    asks: Pubkey,
+
     req_q: Pubkey,
     event_q: Pubkey,
+
     authority: Pubkey,
 }
 
@@ -195,232 +204,22 @@ pub enum RequestView {
 
 // #[repr(packed)]
 #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize)]
-pub struct Request {
-    request_flags: u8,
-    owner_slot: u8,
-
-    max_coin_qty_or_cancel_id: u64,
-    native_pc_qty_locked: u64,
-
-    order_id: u128,
-    owner: Pubkey,
-}
-
-impl Request {
-    pub const MAX_SIZE: usize = 1 + 1 + 8 + 8 + 16 + 32;
-
-    #[inline(always)]
-    pub fn new(view: RequestView) -> Self {
-        match view {
-            RequestView::NewOrder {
-                side,
-                order_type,
-                owner_slot,
-                order_id,
-                owner,
-                max_coin_qty,
-                native_pc_qty_locked,
-            } => {
-                let mut flags = make_bitflags!(RequestFlag::{NewOrder});
-                if side == Side::Bid {
-                    flags |= RequestFlag::Bid;
-                }
-                match order_type {
-                    OrderType::Limit => (),
-                };
-
-                Request {
-                    request_flags: flags.bits(),
-                    owner_slot,
-                    order_id,
-                    owner,
-                    max_coin_qty_or_cancel_id: max_coin_qty,
-                    native_pc_qty_locked: native_pc_qty_locked.unwrap(),
-                }
-            }
-            RequestView::CancelOrder {
-                side,
-                expected_owner_slot,
-                order_id,
-                expected_owner,
-                cancel_id,
-            } => {
-                let mut flags = make_bitflags!(RequestFlag::{CancelOrder});
-                if side == Side::Bid {
-                    flags |= RequestFlag::Bid;
-                }
-
-                Request {
-                    request_flags: flags.bits(),
-                    max_coin_qty_or_cancel_id: cancel_id,
-                    order_id,
-                    owner_slot: expected_owner_slot,
-                    owner: expected_owner,
-                    native_pc_qty_locked: 0,
-                }
-            }
-        }
-    }
-
-    // #[inline(always)]
-    // pub fn as_view(&self) -> DexResult<RequestView> {
-    //     let flags = BitFlags::from_bits(self.request_flags).unwrap();
-    //     let side = if flags.contains(RequestFlag::Bid) {
-    //         Side::Bid
-    //     } else {
-    //         Side::Ask
-    //     };
-    //     if flags.contains(RequestFlag::NewOrder) {
-    //         let allowed_flags = {
-    //             use RequestFlag::*;
-    //             NewOrder | Bid | PostOnly | ImmediateOrCancel
-    //         };
-    //         check_assert!(allowed_flags.contains(flags))?;
-    //         let post_only = flags.contains(RequestFlag::PostOnly);
-    //         let ioc = flags.contains(RequestFlag::ImmediateOrCancel);
-    //         let order_type = match (post_only, ioc) {
-    //             (true, false) => OrderType::PostOnly,
-    //             (false, true) => OrderType::ImmediateOrCancel,
-    //             (false, false) => OrderType::Limit,
-    //             (true, true) => unreachable!(),
-    //         };
-    //         Ok(RequestView::NewOrder {
-    //             side,
-    //             order_type,
-    //             owner_slot: self.owner_slot,
-    //             order_id: self.order_id,
-    //             owner: self.owner,
-    //             max_coin_qty: NonZeroU64::new(self.max_coin_qty_or_cancel_id).unwrap(),
-    //             native_pc_qty_locked: NonZeroU64::new(self.native_pc_qty_locked),
-    //         })
-    //     } else {
-    //         check_assert!(flags.contains(RequestFlag::CancelOrder))?;
-    //         let allowed_flags = {
-    //             use RequestFlag::*;
-    //             CancelOrder | Bid
-    //         };
-    //         check_assert!(allowed_flags.contains(flags))?;
-    //         Ok(RequestView::CancelOrder {
-    //             side,
-    //             cancel_id: self.max_coin_qty_or_cancel_id,
-    //             order_id: self.order_id,
-    //             expected_owner_slot: self.owner_slot,
-    //             expected_owner: self.owner,
-    //         })
-    //     }
-    // }
-}
-
-// #[repr(packed)]
-#[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize)]
 pub struct RequestQueueHeader {
-    head: u64,
-    count: u64,
     next_seq_num: u64,
 }
 
 impl RequestQueueHeader {
-    pub const MAX_SIZE: usize = 8 + 8 + 8;
-
-    fn head(&self) -> u64 {
-        self.head
-    }
-    fn set_head(&mut self, value: u64) {
-        self.head = value;
-    }
-    fn count(&self) -> u64 {
-        self.count
-    }
-    fn set_count(&mut self, value: u64) {
-        self.count = value;
-    }
+    pub const MAX_SIZE: usize = 8;
 }
 
 #[account]
 #[derive(Default)]
 pub struct RequestQueue {
     header: RequestQueueHeader,
-    buf: [Request; 8], // TODO: Somehow it can only has 8 elements at most
 }
 
 impl RequestQueue {
-    pub const MAX_SIZE: usize = RequestQueueHeader::MAX_SIZE + 8 * Request::MAX_SIZE;
-
-    #[inline]
-    pub fn len(&self) -> u64 {
-        self.header.count()
-    }
-
-    #[inline]
-    pub fn full(&self) -> bool {
-        self.header.count() as usize == self.buf.len()
-    }
-
-    #[inline]
-    pub fn empty(&self) -> bool {
-        self.header.count() == 0
-    }
-
-    #[inline]
-    pub fn push_back(&mut self, value: Request) -> Result<()> {
-        require!(!self.full(), ErrorCode::QueueAlreadyFull);
-
-        let slot = ((self.header.head() + self.header.count()) as usize) % self.buf.len();
-        self.buf[slot] = value;
-
-        let count = self.header.count();
-        self.header.set_count(count + 1);
-
-        Ok(())
-    }
-
-    #[inline]
-    pub fn peek_front(&self) -> Option<&Request> {
-        if self.empty() {
-            return None;
-        }
-        Some(&self.buf[self.header.head() as usize])
-    }
-
-    #[inline]
-    pub fn peek_front_mut(&mut self) -> Option<&mut Request> {
-        if self.empty() {
-            return None;
-        }
-        Some(&mut self.buf[self.header.head() as usize])
-    }
-
-    #[inline]
-    pub fn pop_front(&mut self) -> Result<Request> {
-        require!(!self.empty(), ErrorCode::EmptyQueue);
-
-        let value = self.buf[self.header.head() as usize];
-
-        let count = self.header.count();
-        self.header.set_count(count - 1);
-
-        let head = self.header.head();
-        self.header.set_head((head + 1) % self.buf.len() as u64);
-
-        Ok(value)
-    }
-
-    // TODO:
-    // #[inline]
-    // pub fn revert_pushes(&mut self, desired_len: u64) -> DexResult<()> {
-    //     check_assert!(desired_len <= self.header.count())?;
-    //     let len_diff = self.header.count() - desired_len;
-    //     self.header.set_count(desired_len);
-    //     self.header.decr_event_id(len_diff);
-    //     Ok(())
-    // }
-
-    pub fn iter(&self) -> impl Iterator<Item = &Request> {
-        RequestQueueIterator {
-            queue: self,
-            index: 0,
-        }
-    }
+    pub const MAX_SIZE: usize = RequestQueueHeader::MAX_SIZE;
 
     fn gen_order_id(&mut self, limit_price: u64, side: Side) -> u128 {
         let seq_num = self.gen_seq_num();
@@ -436,26 +235,6 @@ impl RequestQueue {
         let seq_num = self.header.next_seq_num;
         self.header.next_seq_num += 1;
         seq_num
-    }
-}
-
-struct RequestQueueIterator<'a> {
-    queue: &'a RequestQueue,
-    index: u64,
-}
-
-impl<'a> Iterator for RequestQueueIterator<'a> {
-    type Item = &'a Request;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index == self.queue.len() {
-            None
-        } else {
-            let item = &self.queue.buf
-                [(self.queue.header.head() + self.index) as usize % self.queue.buf.len()];
-            self.index += 1;
-            Some(item)
-        }
     }
 }
 
@@ -772,6 +551,57 @@ impl<'a> Iterator for EventQueueIterator<'a> {
     }
 }
 
+#[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize)]
+pub struct Order {
+    order_id: u128,
+}
+
+impl Order {
+    pub const MAX_SIZE: usize = 16;
+}
+
+#[account]
+#[derive(Default)]
+pub struct Orders<const T: bool> {
+    heap: [Order; 8],
+}
+
+impl<const T: bool> Orders<T> {
+    pub const MAX_SIZE: usize = 8 * Order::MAX_SIZE;
+
+    // TODO:
+    pub fn find_bbo(&self) -> u64 {
+        if T == true {
+            return 1;
+        }
+        0
+    }
+}
+
+pub type Bids = Orders<true>;
+// #[account]
+// #[derive(Default)]
+// pub struct Bids {
+//     heap: [Order; 8],
+// }
+// impl Bids {
+//     pub const MAX_SIZE: usize = 8 * Order::MAX_SIZE;
+// }
+pub type Asks = Orders<false>;
+// #[account]
+// #[derive(Default)]
+// pub struct Asks {
+//     heap: [Order; 8],
+// }
+// impl Asks {
+//     pub const MAX_SIZE: usize = 8 * Order::MAX_SIZE;
+// }
+
+pub struct OrderBook<'a> {
+    bids: &'a Bids,
+    asks: &'a Asks,
+}
+
 #[derive(Accounts)]
 pub struct InitializeMarket<'info> {
     #[account(
@@ -789,21 +619,36 @@ pub struct InitializeMarket<'info> {
         associated_token::mint = coin_mint,
         associated_token::authority = market,
     )]
-    pub coin_vault: Account<'info, TokenAccount>,
+    pub coin_vault: Box<Account<'info, TokenAccount>>,
     #[account(
         init,
         payer = authority,
         associated_token::mint = pc_mint,
         associated_token::authority = market,
     )]
-    pub pc_vault: Account<'info, TokenAccount>,
+    pub pc_vault: Box<Account<'info, TokenAccount>>,
 
     pub coin_mint: Account<'info, Mint>,
     pub pc_mint: Account<'info, Mint>,
 
     // TODO:
-    // bids
-    // asks
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + Bids::MAX_SIZE,
+        seeds = [b"bids".as_ref(), market.key().as_ref()],
+        bump,
+    )]
+    pub bids: Box<Account<'info, Bids>>,
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + Asks::MAX_SIZE,
+        seeds = [b"asks".as_ref(), market.key().as_ref()],
+        bump,
+    )]
+    pub asks: Box<Account<'info, Asks>>,
+
     #[account(
         init,
         payer = authority,
@@ -820,6 +665,7 @@ pub struct InitializeMarket<'info> {
         bump,
     )]
     pub event_q: Box<Account<'info, EventQueue>>,
+
     #[account(mut)]
     pub authority: Signer<'info>,
 

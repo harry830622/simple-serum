@@ -85,6 +85,11 @@ describe('simple-serum', () => {
   let marketPda: anchor.web3.PublicKey;
   let marketPdaBump: number;
 
+  let bidsPda: anchor.web3.PublicKey;
+  let bidsPdaBump: number;
+  let asksPda: anchor.web3.PublicKey;
+  let asksPdaBump: number;
+
   let reqQPda: anchor.web3.PublicKey;
   let reqQPdaBump: number;
 
@@ -119,6 +124,15 @@ describe('simple-serum', () => {
       program.programId,
     );
 
+    [bidsPda, bidsPdaBump] = await anchor.web3.PublicKey.findProgramAddress(
+      [Buffer.from('bids', 'utf-8'), marketPda.toBuffer()],
+      program.programId,
+    );
+    [asksPda, asksPdaBump] = await anchor.web3.PublicKey.findProgramAddress(
+      [Buffer.from('asks', 'utf-8'), marketPda.toBuffer()],
+      program.programId,
+    );
+
     [reqQPda, reqQPdaBump] = await anchor.web3.PublicKey.findProgramAddress(
       [Buffer.from('req-q', 'utf-8'), marketPda.toBuffer()],
       program.programId,
@@ -148,6 +162,18 @@ describe('simple-serum', () => {
       marketPda,
       true,
     );
+    // await createAssociatedTokenAccount(
+    //   provider,
+    //   coinMint.publicKey,
+    //   coinVault,
+    //   marketPda,
+    // );
+    // await createAssociatedTokenAccount(
+    //   provider,
+    //   pcMint.publicKey,
+    //   pcVault,
+    //   marketPda,
+    // );
 
     authorityCoinTokenAccount = await spl.getAssociatedTokenAddress(
       coinMint.publicKey,
@@ -196,6 +222,8 @@ describe('simple-serum', () => {
           pcVault,
           coinMint: coinMint.publicKey,
           pcMint: pcMint.publicKey,
+          bids: bidsPda,
+          asks: asksPda,
           reqQ: reqQPda,
           eventQ: eventQPda,
           authority: authority.publicKey,
@@ -210,6 +238,8 @@ describe('simple-serum', () => {
       assert(market.pcMint.equals(pcMint.publicKey));
       assert(market.coinDepositsTotal.eq(new anchor.BN(0)));
       assert(market.pcDepositsTotal.eq(new anchor.BN(0)));
+      assert(market.bids.equals(bidsPda));
+      assert(market.asks.equals(asksPda));
       assert(market.reqQ.equals(reqQPda));
       assert(market.eventQ.equals(eventQPda));
       assert(market.authority.equals(authority.publicKey));
@@ -239,11 +269,6 @@ describe('simple-serum', () => {
         })
         .signers([authority])
         .rpc();
-
-      const openOrders = await program.account.openOrders.fetch(openOrdersPda);
-      console.log(openOrders);
-      const reqQ = await program.account.requestQueue.fetch(reqQPda);
-      console.log(reqQ);
     });
   });
 });
